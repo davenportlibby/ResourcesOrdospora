@@ -1,0 +1,563 @@
+---
+title: "ResourcesOrdosporaManuscript"
+author: "Elizabeth Davenport"
+date: "2025-01-30"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Initial stuff, including loading packages and importing data
+
+##loading packages
+```{r,message=F,warning=F}
+library(here)
+library(rstatix)
+library(ggplot2)
+library(rlang)
+library(tidyverse)
+library(dplyr)
+library(ggpubr)
+library(car)
+library(lmtest)
+library(emmeans)
+library(MASS)
+library(AER)
+library(tibble)
+library(survival)
+library(lubridate)
+library(ggsurvfit)
+library(survminer)
+```
+## loading files
+
+```{r,message=F,warning=F}
+# Tell R where files are stored
+here::i_am("scripts/ResourcesOrdosporaManuscript.Rmd")
+
+# Load Files
+a <- readr::read_csv(here("data/InfectionStatusAndBurden.csv"))
+b <- readr::read_csv(here("data/Feeding_Rate_Survivorship.csv"))
+c <- readr::read_csv(here("data/FeedingRates.csv"))
+d <- readr::read_csv(here("data/Ordospora_AE.csv"))
+e <- readr::read_csv(here("data/DOC_Ordospora.csv"))
+```
+
+##Infection probability and burden
+```{r,message=F,warning=F}
+a <- data.frame(a)
+### INFECTION PROBABILITY ###
+
+a$InfStatus <- as.numeric(a$InfectionStatus)
+a$Conc <- as.numeric(a$Conc)
+a$conc.log <- log10(a$Conc+1)
+
+# Specify that food treatments are ordinal variables with the given levels
+a$Food_Level <- factor(a$Food_Level, ordered = TRUE, 
+                                    levels = c("Low", "Medium", "High"))
+
+prev<-glm(InfStatus ~ Food_Level,family = binomial(link = "logit"),data = a) # binomial glm model
+Anova(prev, type = 2) # prints stats
+## significantly different, Chisq = 16.6, df = 2, p = .0002
+
+emmeans(prev,~Food_Level)%>%
+  contrast(method = "pairwise")
+## High-Low differs, High-Med and Low-Med not significantly different
+
+### BURDEN ######
+burden.model <- lm(conc.log ~ Food_Level, data = a)
+summary(burden.model)
+anova(burden.model)
+
+##non parametric alternative to ANOVA
+kruskal.test(conc.log ~ Food_Level, data = a)
+## significantly different
+
+pairwise.wilcox.test(a$conc.log, a$Food_Level,
+                 p.adjust.method = "BH")
+## High-Low and High-Medium are significantly different, Medium-Low not signifcantly different
+```
+
+####Host Mortality ###
+```{r,message=F,warning=F}
+df <- data.frame(b)
+df$Lifespan<-as.numeric(df$Lifespan)
+df$Treatment <- as.factor(df$Treatment)
+df$Food.Level <- as.factor(df$Food.Level)
+
+coxM<- coxph(Surv(Lifespan, Status) ~ Treatment * Food.Level, data = df) # setting up cox model
+coxM
+Anova(coxM) # prints stats
+cox.zph(coxM) # checks for test assumptions
+
+df_HF<-df[df$Food.Level=="High",] # makes new database (subsets only high food)
+df_MF<-df[df$Food.Level=="Medium",] # makes new database (subsets medium food)
+df_LF<-df[df$Food.Level=="Low",] # makes new database (subsets low food)
+
+coxHF<- coxph(Surv(Lifespan, Status) ~ Treatment, data = df_HF) # cox model for high food
+summary(coxHF)
+Anova(coxHF)
+cox.zph(coxHF)
+
+coxMF<- coxph(Surv(Lifespan, Status) ~ Treatment, data = df_MF) # cox model for medium food
+summary(coxMF)
+Anova(coxMF)
+cox.zph(coxMF)
+
+coxLF<- coxph(Surv(Lifespan, Status) ~ Treatment, data = df_LF) # cox model for low food
+summary(coxLF)
+Anova(coxLF)
+cox.zph(coxLF)
+
+```
+####Feeding Rates
+```{r,message=F,warning=F}
+fr.df <- data.frame(c)
+##removing Plate 5 Day 10, issues with plate reader
+fr.df = fr.df %>%
+  filter(Plate != "5" | Sample.Round != "2")
+##removing individuals that died during assay during round 1
+fr.df = fr.df %>%
+  filter(Sample != "CL16" & Sample != "CM1" & Sample != "CL28" & Sample != "ML24" & Sample != "ML44" & Sample != "MM50" & Sample != "MM4" & Sample != "MM2" | Sample.Round != "1")
+##removing individuals that died during assay during round 2
+fr.df = fr.df %>%
+  filter(Sample != "ML12" | Sample.Round != "2")
+##removing extreme outlier, individual died before next assay
+fr.df = fr.df %>%
+  filter(Sample != "CL50" | Sample.Round != "1")
+##removed NA values for feeding rate
+fr.df = fr.df %>% drop_na(Feeding.Rate)
+##removing Day 24 data from Low and Medium Food because sample size for OP treatments were extremely low
+##too unbalanced with controls for appropriate statistical tests
+fr.df<-fr.df[!(fr.df$Food=="Low" & fr.df$Days.PostExposure>23),]
+fr.df<-fr.df[!(fr.df$Food=="Medium" & fr.df$Days.PostExposure>23),]
+
+fr.df$Days.PostExposure <- as.numeric(fr.df$Days.PostExposure)
+fr.df$Feeding.Rate <- as.numeric(fr.df$Feeding.Rate)
+fr.df$Treatment <- as.factor(fr.df$Treatment)
+
+
+##global model
+g.model <-lm(Feeding.Rate ~ Treatment * Days.PostExposure * Food, data = fr.df)
+anova(g.model)
+plot(g.model)
+summary(g.model)
+##Significant interaction
+
+##separating by food level for posthoc
+only.fr.high = fr.df %>%
+  filter(Food == "High")
+only.fr.high <- data.frame(only.fr.high)
+only.fr.high$Days.PostExposure <- as.numeric(only.fr.high$Days.PostExposure)
+only.fr.high$Feeding.Rate <- as.numeric(only.fr.high$Feeding.Rate)
+only.fr.high$Treatment <- as.factor(only.fr.high$Treatment)
+
+fr.high.model <-lm(Feeding.Rate ~ Treatment * Days.PostExposure, data = only.fr.high)
+Anova(fr.high.model, type = 3, contrasts=list(topic=contr.sum, sys=contr.sum))
+##Significant interaction
+
+only.fr.high3 = only.fr.high %>%
+  filter(Days.PostExposure == "3")
+res.high3 <- wilcox.test(Feeding.Rate ~ Treatment, data = only.fr.high3,
+                   exact = FALSE)
+##not significantly different
+
+only.fr.high10 = only.fr.high %>%
+  filter(Days.PostExposure == "10")
+res.high10 <- wilcox.test(Feeding.Rate ~ Treatment, data = only.fr.high10,
+                   exact = FALSE)
+##not significantly different
+
+only.fr.high17 = only.fr.high %>%
+  filter(Days.PostExposure == "17")
+res.high17 <- wilcox.test(Feeding.Rate ~ Treatment, data = only.fr.high17,
+                   exact = FALSE)
+res.high17
+##significantly different
+
+only.fr.high24 = only.fr.high %>%
+  filter(Days.PostExposure == "24")
+res.high24 <- wilcox.test(Feeding.Rate ~ Treatment, data = only.fr.high24,
+                   exact = FALSE)
+res.high24
+##significantly different
+
+only.fr.med = fr.df %>%
+  filter(Food == "Medium")
+only.fr.med <- data.frame(only.fr.med)
+only.fr.med$Days.PostExposure <- as.numeric(only.fr.med$Days.PostExposure)
+only.fr.med$Feeding.Rate <- as.numeric(only.fr.med$Feeding.Rate)
+only.fr.med$Treatment <- as.factor(only.fr.med$Treatment)
+
+fr.med.model <-lm(Feeding.Rate ~ Treatment * Days.PostExposure, data = only.fr.med)
+summary(fr.med.model)
+Anova(fr.med.model, type = 3, contrasts=list(topic=contr.sum, sys=contr.sum))
+##Significant effect of exposure and day but no interaction
+
+only.fr.low = fr.df %>%
+  filter(Food == "Low")
+only.fr.low <- data.frame(only.fr.low)
+only.fr.low$Days.PostExposure <- as.numeric(only.fr.low$Days.PostExposure)
+only.fr.low$Feeding.Rate <- as.numeric(only.fr.low$Feeding.Rate)
+only.fr.low$Treatment <- as.factor(only.fr.low$Treatment)
+
+fr.low.model <-lm(Feeding.Rate ~ Treatment * Days.PostExposure, data = only.fr.low)
+summary(fr.low.model)
+plot(fr.low.model)
+Anova(fr.low.model, type = 3, contrasts=list(topic=contr.sum, sys=contr.sum))
+##Significant interaction between day and exposure
+
+only.fr.low3 = only.fr.low %>%
+  filter(Days.PostExposure == "3")
+res.low3 <- wilcox.test(Feeding.Rate ~ Treatment, data = only.fr.low3,
+                   exact = FALSE)
+res.low3
+##significantly different
+
+only.fr.low10 = only.fr.low %>%
+  filter(Days.PostExposure == "10")
+res.low10 <- wilcox.test(Feeding.Rate ~ Treatment, data = only.fr.low10,
+                   exact = FALSE)
+##not significantly different
+
+only.fr.low17 = only.fr.low %>%
+  filter(Days.PostExposure == "17")
+res.low17 <- wilcox.test(Feeding.Rate ~ Treatment, data = only.fr.low17,
+                   exact = FALSE)
+## not significantly different
+```
+
+####Assimilation Efficiency
+```{r,message=F,warning=F}
+df.AE <- data.frame(d)
+df.AE$Treatment <- as.factor(df.AE$Treatment)
+df.AE$AE <- as.numeric(df.AE$AE)
+
+# Shapiro-Wilk normality test for Control
+with(df.AE, shapiro.test(AE[Treatment == "Unexposed"]))# p > .05
+# normally distributed
+
+# Shapiro-Wilk normality test for Ordospora
+with(df.AE, shapiro.test(AE[Treatment == "Ordospora"])) # p < .05
+## normally distributed
+
+AE.res.ftest <- var.test(AE ~ Treatment, data = df.AE)
+AE.res.ftest
+## equal variances
+
+AE.res <- t.test(AE ~ Treatment, data = df.AE, var.equal = TRUE)
+AE.res
+##not significantly different
+
+```
+
+####DOC Release
+```{r,message=F,warning=F}
+df.doc <- data.frame(e)
+df.doc$Treatment <- as.factor(df.doc$Treatment)
+df.doc$TOC <- as.numeric(df.doc$TOC)
+
+dissolved.test <- t.test(TOC ~ Treatment, data = df.doc, var.equal = TRUE)
+dissolved.test
+##not significantly different
+```
+
+
+
+###Figure 1
+```{r,message=F,warning=F}
+a$Food_Level <- str_replace(a$Food_Level, "Low", "Low \n(6.25%)")
+a$Food_Level <- str_replace(a$Food_Level, "Medium", "Medium \n(12.5%)")
+a$Food_Level <- str_replace(a$Food_Level, "High", "High \n(100%)")
+
+library(Rmisc)
+prevSE<-summarySE(data = a, measurevar = "InfectionStatus", groupvars = c("Food_Level"), na.rm = T)
+# the line above summarizes data within treatments and calculates sd, se and ci
+
+cols <- c("Low \n(6.25%)"= "#90EE90",
+          "Medium \n(12.5%)"= "mediumseagreen",
+          "High \n(100%)" = "#006400")
+
+level_order <- c('Low \n(6.25%)', 'Medium \n(12.5%)', 'High \n(100%)') 
+
+infections<- # makes the plot
+  ggplot(prevSE, aes(x=Food_Level, y=InfectionStatus, color=Food_Level)) + 
+  geom_line(position=position_dodge(.2))+
+  geom_errorbar(aes(ymin=InfectionStatus-se, ymax=InfectionStatus+se), width=0, 
+                position=position_dodge(.2)) + 
+  scale_y_continuous(limits = c(0,1.05))+
+  scale_x_discrete(limits = level_order)+
+  ylab("O. pajunii \n infection probability")+
+  xlab("Food Level")+
+  geom_point(position=position_dodge(.2), size=6)+
+  scale_color_manual(values = cols)+
+  theme_classic()+
+  theme(axis.text = element_text(size = 12, colour = "black"),
+        axis.title.x = element_text(face = "bold",size = 12, colour = "black"),
+        axis.title.y = element_text(face = "bold",size = 12, colour = "black"),
+        legend.title = element_text(size = 12, colour = "black"),
+        legend.text = element_text(size = 12, color = "black"),
+        legend.position = "none")+
+   annotate(geom="text", x=0.6, y=1, label="(A)", size=6,
+           color="black")+
+  annotate(geom="text", x=1, y=.5, label="a", size=4,
+           color="black")+
+  annotate(geom="text", x=2, y=.7, label="ab", size=4,
+           color="black")+
+  annotate(geom="text", x=3, y=.95, label="b", size=4,
+           color="black")
+
+infections # prints the plot
+
+burdenSE<-summarySE(data = a, measurevar = "conc.log", groupvars = c("Food_Level"), na.rm = T)
+# the line above summarizes data within treatments and calculates sd, se and ci
+
+
+burden<- # makes the plot
+  ggplot(burdenSE, aes(x=Food_Level, y=conc.log, color=Food_Level)) + 
+  geom_line(position=position_dodge(.2))+
+  geom_errorbar(aes(ymin=conc.log-se, ymax=conc.log+se), width=0, 
+                position=position_dodge(.2)) + 
+  scale_y_continuous(limits = c(-.1,3.13), breaks = seq(0,3,1))+
+  scale_x_discrete(limits = level_order)+
+  ylab("Log(spore burden+1)")+
+  xlab("Food Level")+
+  geom_point(position=position_dodge(.2), size=6)+
+  scale_color_manual(values = cols)+
+  theme_classic()+
+  theme(axis.text = element_text(size = 12, colour = "black"),
+        axis.title.x = element_text(face = "bold",size = 12, colour = "black"),
+        axis.title.y = element_text(face = "bold",size = 12, colour = "black"),
+        legend.title = element_text(size = 12, colour = "black"),
+        legend.text = element_text(size = 12, color = "black"),
+        legend.position = "none")+
+  annotate(geom="text", x=0.6, y=3, label="(B)", size=6,
+           color="black")+
+  annotate(geom="text", x=1, y=.6, label="a", size=4,
+           color="black")+
+  annotate(geom="text", x=2, y=1, label="a", size=4,
+           color="black")+
+  annotate(geom="text", x=3, y=2.95, label="b", size=4,
+           color="black")
+
+burden # prints the plot
+
+InfProbAndBurdenCombined = ggarrange(infections,burden,
+                     nrow = 1, ncol = 2,
+                     common.legend = FALSE,
+                     legend="none")
+
+
+#### saving combined plot
+##ggsave("PrevalenceAndBurden.jpg", InfProbAndBurdenCombined, height = 5, width = 7, dpi = 600) # saves the plot
+```
+
+###Figure 2
+```{r,message=F,warning=F}
+df$Food.Level <- factor(df$Food.Level, levels=c('Low', 'Medium', 'High'))
+df$Treatment <- factor(df$Treatment, levels = c('Ordospora','Unexposed'))
+
+##lt <- c("Ordospora" = "twodash", "Unexposed" ="solid")
+##cols2 <- c("High" = "#006400", "Medium" ="mediumseagreen", "Low" = "#90EE90")
+
+LMall<- # produces Kaplan-Meier plot for high food treatments
+  ggsurvplot(survfit(Surv(Lifespan, Status) ~ Treatment + Food.Level, data = df),
+             conf.int=F, palette = c("#90EE90","mediumseagreen", "#006400","#90EE90","mediumseagreen", "#006400"), linetype = c("twodash", "twodash", "twodash", "solid","solid","solid"),legend.labs = c("Ordospora Low", "Ordospora Medium", "Ordospora High", "Unexposed Low", "Unexposed Medium", "Unexposed High"), xlim = c(0, 28))
+LMall$plot<-LMall$plot+
+  ggplot2::annotate("text", 
+                    x = 10, y = 0.2, # x and y coordinates of the text
+                    label = "",size = 10)+
+  xlab("Day")+
+  ggtitle("")+
+  scale_y_continuous(limits=c(0,1.05),expand = c(0,0))+
+  scale_x_continuous(limits = c(0,28), expand = c(0,0))+
+  theme(legend.text = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        legend.key.width = unit(1.5, 'cm'),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(color = "black",size = 12),
+        axis.title.x = element_text(face = "bold", color = "black", size = 14),
+        axis.title.y = element_text(face = "bold", colour = "black", size = 14))+ 
+  guides(col = guide_legend(nrow = 2, theme = theme(legend.byrow = TRUE)))+
+  theme(axis.title.y = element_text(angle = 90, vjust = 0.5, hjust=0.5))
+
+LMall
+```
+
+###Figure 3
+```{r,message=F,warning=F}
+
+only.fr.high$Treatment <- str_replace(only.fr.high$Treatment, "MicG", "Ordospora")
+only.fr.high$Treatment <- str_replace(only.fr.high$Treatment, "Control", "Unexposed")
+
+fr.cols <- c("Unexposed"= "#0072B2",
+          "Ordospora"= "yellow3")
+
+
+high.plot <- ggplot(only.fr.high, aes(y=Feeding.Rate, x = as.numeric(Days.PostExposure), color = Treatment)) +
+  geom_point(size=.5, position = position_dodge(1.5)) +
+  geom_smooth(method = "lm", size=.75, se=FALSE)+
+  scale_colour_manual(name="",values = fr.cols)+
+  ggtitle("High Food (100%)") +
+  scale_y_continuous(limits = c(-1.75,2), breaks = seq(-1,2,1))+
+  scale_x_continuous(limits = c(2,25),breaks = seq(3,24,7))+
+  theme_bw() +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(face = "bold", size = 10),
+        axis.text=element_text(size=8,face="bold"), 
+        axis.title=element_text(face = "bold", size=10),
+        legend.position = "bottom",
+        legend.text=element_text(size=8))+  guides(color=guide_legend(override.aes=list(fill=NA)))+
+  labs(x = (""), y = "")+theme(plot.margin = unit(c(0.2,0,0,0.2), 'lines'))
+
+high.plot
+```
+
+```{r,message=F,warning=F}
+only.fr.med$Treatment <- str_replace(only.fr.med$Treatment, "MicG", "Ordospora")
+only.fr.med$Treatment <- str_replace(only.fr.med$Treatment, "Control", "Unexposed")
+
+medium.plot <- ggplot(only.fr.med, aes(y=Feeding.Rate, x = as.numeric(Days.PostExposure), color = Treatment)) +
+  geom_point(size=.5,position = position_dodge(1.5)) +
+  geom_smooth(method = "lm", size=.75, se=FALSE)+
+  scale_colour_manual(name="",values = fr.cols)+
+  ggtitle("Medium Food (12.5%)") +
+  scale_y_continuous(limits = c(-1.75,2), breaks = seq(-1,2,1))+
+  scale_x_continuous(limits = c(2,25), breaks = seq(3,24,7))+
+  theme_bw() +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(face = "bold", size = 10),
+        axis.text=element_text(size=8,face="bold"), 
+        axis.title=element_text(face = "bold", size=10),
+        legend.position = "bottom",
+        legend.text=element_text(size=8))+  guides(color=guide_legend(override.aes=list(fill=NA)))+
+  labs(x = ("Days Post-Exposure"), y = "")+theme(plot.margin = unit(c(0.2,0,0,0.2), 'lines'))
+
+medium.plot
+
+
+```
+
+
+```{r,message=F,warning=F}
+
+only.fr.low$Treatment <- str_replace(only.fr.low$Treatment, "MicG", "Ordospora")
+only.fr.low$Treatment <- str_replace(only.fr.low$Treatment, "Control", "Unexposed")
+
+low.plot <- ggplot(only.fr.low, aes(y=Feeding.Rate, x = as.numeric(Days.PostExposure), color = Treatment)) +
+  geom_point(size=.5,position = position_dodge(1.5)) +
+  geom_smooth(method = "lm", size=.75, se=FALSE)+
+  scale_colour_manual(name="",values = fr.cols)+
+  ggtitle("Low Food (6.25%)") +
+  scale_y_continuous(limits = c(-1.75,2), breaks = seq(-1,2,1))+
+  scale_x_continuous(limits = c(2,25),breaks = seq(3,24,7))+
+  theme_bw() +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(face = "bold", size = 10),
+        axis.text=element_text(size=8,face="bold"), 
+        axis.title=element_text(face = "bold", size=10),
+        legend.position = "bottom",
+        legend.text=element_text(size=8))+  guides(color=guide_legend(override.aes=list(fill=NA)))+
+  labs(x = (""), y = "Feeding Rate")+theme(plot.margin = unit(c(0.2,0,0,0.2), 'lines'))
+
+low.plot
+```
+
+
+```{r,message=F,warning=F}
+fr.combined = ggarrange(low.plot,medium.plot, high.plot,
+                     nrow = 1, ncol = 3,
+                     common.legend = TRUE,
+                     legend="bottom")
+
+#### saving combined plot
+##ggsave(here("figures", "FeedingRatesCombined.jpg"), fr.combined, width = 6, height = 5,units = "in", dpi = 600)
+```
+
+
+### Figure 4
+```{r,message=F,warning=F}
+cols.ae <- c("Unexposed" = "#0072B2","Ordospora"="yellow3")
+
+df.AE$AE <- as.numeric(df.AE$AE)
+df.AE$Treatment <- as.factor(df.AE$Treatment)
+
+AE.SE<-summarySE(data = df.AE, measurevar = "AE", groupvars = c("Treatment"), na.rm = T)
+
+
+AE.plot <- ggplot(AE.SE, aes(x=Treatment,y=AE, color=Treatment)) +
+  geom_point(position=position_dodge(.2), size=2)+
+  geom_line(position=position_dodge(.2))+
+  geom_errorbar(aes(ymin=AE-se, ymax=AE+se), width=0, 
+                position=position_dodge(.2)) +
+  scale_y_continuous(limits = c(0,100), breaks = seq(0,100,10)) +
+  scale_colour_manual(name="Treatment",values = cols.ae)+
+  theme_bw() +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"))+
+  ggtitle(expression(paste(bold("")))) +
+  theme(plot.title = element_text(face = "bold",size = 12)) +
+  theme(axis.text=element_text(size=10, face = "bold"), 
+        axis.title=element_text(size=12,face="bold")) +
+  theme(legend.text=element_text(size=10,face="bold"),
+        legend.position = "none")+
+  labs(x = ("Treatment"), y = ("Assimilation Efficiency (%)"))+
+  annotate(geom="text", x=0.6, y=98, label="(A)", size=6,
+           color="black")
+
+df.doc$Treatment <- str_replace(df.doc$Treatment, "OP", "Ordospora")
+DOC.SE<-summarySE(data = df.doc, measurevar = "TOC", groupvars = c("Treatment"), na.rm = T)
+
+
+DOC.plot <- # makes the plot
+  ggplot(DOC.SE, aes(x=Treatment, y=TOC, color = Treatment)) + 
+  geom_line(position=position_dodge(.2))+
+  geom_errorbar(aes(ymin=TOC-se, ymax=TOC+se), width=0, 
+                position=position_dodge(.2)) + 
+  scale_y_continuous(limits = c(0.75,1.25))+
+  ylab("DOC (mg/L)")+
+  xlab("Treatment")+
+  scale_colour_manual(name="",values = cols.ae)+
+  geom_point(position=position_dodge(.2), size=2)+
+  theme_bw() +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"))+
+  ggtitle(expression(paste(bold("")))) +
+  theme(plot.title = element_text(face = "bold",size = 12)) +
+  theme(axis.text=element_text(size=10, face = "bold"), 
+        axis.title=element_text(size=12,face="bold")) +
+  theme(legend.text=element_text(size=10,face="bold"),
+        legend.position = "none")+
+  annotate(geom="text", x=0.6, y=1.24, label="(B)", size=6,
+           color="black")
+
+DOC.plot # prints the plot
+combined.carbon = ggarrange(AE.plot,DOC.plot,
+                     nrow = 1, ncol = 2, common.legend = FALSE)
+combined.carbon
+
+##ggsave("AE_DOC_Combined.jpg", combined.carbon, height = 3, width = 5, dpi = 600) # saves the plot
+
+
+```
+
+
+
+
+
